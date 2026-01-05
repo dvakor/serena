@@ -55,6 +55,10 @@ class Language(str, Enum):
     NIX = "nix"
     ERLANG = "erlang"
     AL = "al"
+    BSL = "bsl"
+    """BSL Language Server for 1C:Enterprise and OneScript.
+    Requires Java 17+. Supports *.bsl and *.os files.
+    """
     FSHARP = "fsharp"
     REGO = "rego"
     SCALA = "scala"
@@ -203,6 +207,8 @@ class Language(str, Enum):
                 return FilenameMatcher("*.erl", "*.hrl", "*.escript", "*.config", "*.app", "*.app.src")
             case self.AL:
                 return FilenameMatcher("*.al", "*.dal")
+            case self.BSL:
+                return FilenameMatcher("*.bsl", "*.os")
             case self.FSHARP:
                 return FilenameMatcher("*.fs", "*.fsx", "*.fsi")
             case self.REGO:
@@ -357,6 +363,10 @@ class Language(str, Enum):
                 from solidlsp.language_servers.al_language_server import ALLanguageServer
 
                 return ALLanguageServer
+            case self.BSL:
+                from solidlsp.language_servers.bsl_language_server import BslLanguageServer
+
+                return BslLanguageServer
             case self.REGO:
                 from solidlsp.language_servers.regal_server import RegalLanguageServer
 

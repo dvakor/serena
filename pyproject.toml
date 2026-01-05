@@ -265,6 +265,8 @@ max-complexity = 20
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D103"]
 "scripts/**" = ["D103"]
+"test/solidlsp/bsl/**" = ["RUF001"]
+"test/resources/repos/bsl/**" = ["RUF001"]
 
 [tool.pytest.ini_options]
 addopts = "--snapshot-patch-pycharm-diff"
@@ -286,6 +288,7 @@ markers = [
   "terraform: language server running for Terraform",
   "swift: language server running for Swift",
   "bash: language server running for Bash",
+  "bsl: language server running for BSL (1C:Enterprise/OneScript)",
   "r: language server running for R",
   "snapshot: snapshot tests for symbolic editing operations",
   "ruby: language server running for Ruby (uses ruby-lsp)",
