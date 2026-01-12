@@ -233,3 +233,19 @@ class TestProjectBasics:
         no_match_pattern = r"def\s+this_method_does_not_exist\s*\([^)]*\):"
         matches = project.search_source_files_for_pattern(no_match_pattern)
         assert len(matches) == 0
+
+    @pytest.mark.parametrize("language_server", [Language.PYTHON], indirect=True)
+    def test_diagnostics_unavailable_for_python(self, language_server: SolidLanguageServer) -> None:
+        """Test that diagnostics are gracefully handled when not available.
+
+        Python language server (pyright) does not currently opt-in to diagnostics,
+        so this tests the graceful handling of unavailable diagnostics.
+        """
+        from solidlsp.ls_exceptions import SolidLSPException
+
+        # Python LS should not have diagnostics enabled
+        assert not language_server.diagnostics_available.is_set(), "Python LS should not have diagnostics enabled"
+
+        # Trying to request diagnostics should raise an exception
+        with pytest.raises(SolidLSPException, match="Diagnostics are not available"):
+            language_server.request_text_document_diagnostics(os.path.join("test_repo", "models.py"))

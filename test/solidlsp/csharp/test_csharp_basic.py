@@ -127,6 +127,15 @@ class TestCSharpLanguageServer:
         refs_second_call = language_server.request_references(file_path, sel_start["line"], sel_start["character"] + 1)
         assert refs_second_call == refs, "Second call to request_references should return the same results"
 
+    @pytest.mark.parametrize("language_server", [Language.CSHARP], indirect=True)
+    def test_csharp_diagnostics_capability(self, language_server: SolidLanguageServer) -> None:
+        """Test that C# language server has diagnostics capability enabled."""
+        # C# language server should have diagnostics available after _force_pull_diagnostics
+        if language_server.diagnostics_available.is_set():
+            file_path = os.path.join("Program.cs")
+            diagnostics = language_server.request_text_document_diagnostics(file_path)
+            assert isinstance(diagnostics, list), "Diagnostics should be a list"
+
 
 @pytest.mark.csharp
 class TestCSharpSolutionProjectOpening:

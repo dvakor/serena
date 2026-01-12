@@ -295,6 +295,7 @@ class SolidLanguageServer(ABC):
 
         self.server_started = False
         self.completions_available = threading.Event()
+        self.diagnostics_available = threading.Event()
         if config.trace_lsp_communication:
 
             def logging_fn(source: str, target: str, msg: StringDict | str) -> None:
@@ -431,9 +432,12 @@ class SolidLanguageServer(ABC):
             log.debug(f"Exception during graceful shutdown: {e}")
             # Ignore errors here, we are proceeding to terminate anyway.
 
-        # Stage 2: Terminate and Wait for Process to Exit
-        log.debug(f"Terminating process {process.pid}, current status: {process.poll()}")
-        process.terminate()
+        # Stage 2: Terminate process tree and wait for process to exit
+        # Use _signal_process_tree to properly terminate the entire process tree,
+        # which is essential for Java-based language servers (BSL, Kotlin, Eclipse JDTLS)
+        # that are launched via shell=True, where the shell is the parent process.
+        log.debug(f"Terminating process tree for {process.pid}, current status: {process.poll()}")
+        self.server._signal_process_tree(process, terminate=True)
 
         # Stage 3: Wait for process termination with timeout
         try:
@@ -441,9 +445,9 @@ class SolidLanguageServer(ABC):
             exit_code = process.wait(timeout=timeout)
             log.info(f"Language server process terminated successfully with exit code {exit_code}.")
         except subprocess.TimeoutExpired:
-            # If termination failed, forcefully kill the process
-            log.warning(f"Process {process.pid} termination timed out, killing process forcefully...")
-            process.kill()
+            # If termination failed, forcefully kill the entire process tree
+            log.warning(f"Process {process.pid} termination timed out, killing process tree forcefully...")
+            self.server._signal_process_tree(process, terminate=False)
             try:
                 exit_code = process.wait(timeout=2.0)
                 log.info(f"Language server process killed successfully with exit code {exit_code}.")
@@ -780,10 +784,15 @@ class SolidLanguageServer(ABC):
         :param relative_file_path: The relative path of the file to retrieve diagnostics for
 
         :return: A list of diagnostics for the file
+
+        :raises SolidLSPException: If the language server is not started or diagnostics are not available
         """
         if not self.server_started:
             log.error("request_text_document_diagnostics called before Language Server started")
             raise SolidLSPException("Language Server not started")
+
+        if not self.diagnostics_available.is_set():
+            raise SolidLSPException("Diagnostics are not available for this language server")
 
         with self.open_file(relative_file_path):
             response = self.server.send.text_document_diagnostic(

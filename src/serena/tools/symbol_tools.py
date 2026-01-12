@@ -342,3 +342,56 @@ class RenameSymbolTool(Tool, ToolMarkerSymbolicEdit):
         code_editor = self.create_code_editor()
         status_message = code_editor.rename_symbol(name_path, relative_file_path=relative_path, new_name=new_name)
         return status_message
+
+
+class GetDiagnosticsTool(Tool, ToolMarkerSymbolicRead, ToolMarkerOptional):
+    """
+    Retrieves code diagnostics (errors, warnings, hints) for a given file from the language server.
+    """
+
+    SEVERITY_MAP = {
+        1: "Error",
+        2: "Warning",
+        3: "Information",
+        4: "Hint",
+    }
+
+    def apply(self, relative_path: str) -> str:
+        """
+        Gets diagnostics (errors, warnings, hints) for the specified file.
+        This tool is only available when the language server supports diagnostics.
+
+        :param relative_path: the relative path to the file to get diagnostics for
+        :return: a JSON array of diagnostics with severity, message, line, and code
+        """
+        if not self.agent.is_using_language_server():
+            return "Diagnostics are not available: not using a language server."
+
+        ls_manager = self.agent.get_language_server_manager()
+        if ls_manager is None:
+            return "Diagnostics are not available: language server manager not initialized."
+
+        ls = ls_manager.get_language_server(relative_path)
+
+        if not ls.diagnostics_available.is_set():
+            return f"Diagnostics are not available for this language server ({ls.language})."
+
+        diagnostics = ls.request_text_document_diagnostics(relative_path)
+
+        if not diagnostics:
+            return "No diagnostics found for this file."
+
+        # Format diagnostics for output
+        result = []
+        for diag in diagnostics:
+            range_info = diag.get("range", {})
+            start = range_info.get("start", {})
+            formatted = {
+                "severity": self.SEVERITY_MAP.get(diag.get("severity", 0), "Unknown"),
+                "message": diag.get("message", ""),
+                "line": start.get("line", 0) + 1,  # Convert to 1-based line numbers
+                "code": diag.get("code", ""),
+            }
+            result.append(formatted)
+
+        return self._to_json(result)

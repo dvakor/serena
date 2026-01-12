@@ -658,11 +658,16 @@ class CSharpLanguageServer(SolidLanguageServer):
         except Exception as e:
             raise SolidLSPException(f"Failed to initialize C# language server for {self.repository_root_path}: {e}") from e
 
-        # Apply diagnostic capabilities
+        # Apply diagnostic capabilities and enable diagnostics
         self._force_pull_diagnostics(init_response)
 
         # Verify required capabilities
         capabilities = init_response.get("capabilities", {})
+
+        # Enable diagnostics if available
+        if "diagnosticProvider" in capabilities:
+            self.diagnostics_available.set()
+            log.info("C# Language Server diagnostics enabled")
         required_capabilities = [
             "textDocumentSync",
             "definitionProvider",

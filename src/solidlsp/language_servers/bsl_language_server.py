@@ -410,4 +410,8 @@ class BslLanguageServer(SolidLanguageServer):
         if "completionProvider" in capabilities:
             self.completions_available.set()
 
+        if "diagnosticProvider" in capabilities:
+            self.diagnostics_available.set()
+            log.info("BSL Language Server diagnostics enabled")
+
         self.server.notify.initialized({})

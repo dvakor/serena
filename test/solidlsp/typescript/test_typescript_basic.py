@@ -31,3 +31,13 @@ class TestTypescriptLanguageServer:
         assert any(
             "index.ts" in ref.get("relativePath", "") for ref in refs
         ), "index.ts should reference helperFunction (tried all positions in selectionRange)"
+
+    @pytest.mark.parametrize("language_server", [Language.TYPESCRIPT], indirect=True)
+    def test_typescript_diagnostics_capability(self, language_server: SolidLanguageServer) -> None:
+        """Test that TypeScript language server reports diagnostics capability correctly."""
+        # TypeScript LS may or may not have diagnosticProvider depending on version
+        # This test verifies the capability detection mechanism works
+        # If diagnostics_available is set, we should be able to request diagnostics
+        if language_server.diagnostics_available.is_set():
+            diagnostics = language_server.request_text_document_diagnostics("index.ts")
+            assert isinstance(diagnostics, list), "Diagnostics should be a list"

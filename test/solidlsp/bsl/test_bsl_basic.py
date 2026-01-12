@@ -123,3 +123,22 @@ class TestBslLanguageServerBasics:
         functions = [sym for sym in all_symbols if sym.get("kind") in function_kinds]
 
         assert len(functions) >= 2, f"Should find at least 2 functions/methods. Found: {len(functions)}"
+
+    @pytest.mark.parametrize("language_server", [Language.BSL], indirect=True)
+    def test_bsl_diagnostics_available(self, language_server: SolidLanguageServer) -> None:
+        """Test that BSL language server has diagnostics capability enabled."""
+        assert language_server.diagnostics_available.is_set(), "BSL Language Server should have diagnostics enabled"
+
+    @pytest.mark.parametrize("language_server", [Language.BSL], indirect=True)
+    def test_bsl_request_diagnostics(self, language_server: SolidLanguageServer) -> None:
+        """Test request_text_document_diagnostics for Main.bsl file."""
+        # Request diagnostics - the file may or may not have diagnostics depending on the BSL LS version
+        diagnostics = language_server.request_text_document_diagnostics("Main.bsl")
+
+        # Should return a list (possibly empty if no issues)
+        assert isinstance(diagnostics, list), "Diagnostics should be a list"
+
+        # If there are diagnostics, verify structure
+        for diag in diagnostics:
+            assert "message" in diag, "Diagnostic should have a message"
+            assert "range" in diag, "Diagnostic should have a range"

@@ -298,6 +298,12 @@ class TypeScriptLanguageServer(SolidLanguageServer):
             self.server_ready.set()
         self.completions_available.set()
 
+        # Enable diagnostics - TypeScript language server supports pull diagnostics
+        capabilities = init_response.get("capabilities", {})
+        if "diagnosticProvider" in capabilities:
+            self.diagnostics_available.set()
+            log.info("TypeScript Language Server diagnostics enabled")
+
     @override
     def _get_wait_time_for_cross_file_referencing(self) -> float:
         return 1
