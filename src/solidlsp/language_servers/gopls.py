@@ -159,6 +159,12 @@ class Gopls(SolidLanguageServer):
         assert "completionProvider" in init_response["capabilities"]
         assert "definitionProvider" in init_response["capabilities"]
 
+        # Enable diagnostics if available
+        capabilities = init_response.get("capabilities", {})
+        if "diagnosticProvider" in capabilities:
+            self.diagnostics_available.set()
+            log.info("Go Language Server (gopls) diagnostics enabled")
+
         self.server.notify.initialized({})
         self.completions_available.set()
 

@@ -215,6 +215,12 @@ class VtsLanguageServer(SolidLanguageServer):
         log.debug(f"textDocumentSync: {init_response['capabilities']['textDocumentSync']}")
         log.debug(f"completionProvider: {init_response['capabilities']['completionProvider']}")
 
+        # Enable diagnostics if available
+        capabilities = init_response.get("capabilities", {})
+        if "diagnosticProvider" in capabilities:
+            self.diagnostics_available.set()
+            log.info("VTS Language Server diagnostics enabled")
+
         self.server.notify.initialized({})
         if self.server_ready.wait(timeout=1.0):
             log.info("VTS server is ready")

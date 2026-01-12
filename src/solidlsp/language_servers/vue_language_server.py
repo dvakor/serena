@@ -680,6 +680,12 @@ class VueLanguageServer(SolidLanguageServer):
 
         assert init_response["capabilities"]["textDocumentSync"] in [1, 2]
 
+        # Enable diagnostics if available
+        capabilities = init_response.get("capabilities", {})
+        if "diagnosticProvider" in capabilities:
+            self.diagnostics_available.set()
+            log.info("Vue Language Server diagnostics enabled")
+
         self.server.notify.initialized({})
 
         log.info("Waiting for Vue language server to be ready...")

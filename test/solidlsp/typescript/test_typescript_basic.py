@@ -41,3 +41,12 @@ class TestTypescriptLanguageServer:
         if language_server.diagnostics_available.is_set():
             diagnostics = language_server.request_text_document_diagnostics("index.ts")
             assert isinstance(diagnostics, list), "Diagnostics should be a list"
+
+    @pytest.mark.parametrize("language_server", [Language.TYPESCRIPT_VTS], indirect=True)
+    def test_vts_diagnostics_capability(self, language_server: SolidLanguageServer) -> None:
+        """Test that VTS language server reports diagnostics capability correctly."""
+        # VTS may or may not have diagnosticProvider depending on version
+        # If diagnostics_available is set, we should be able to request diagnostics
+        if language_server.diagnostics_available.is_set():
+            diagnostics = language_server.request_text_document_diagnostics("index.ts")
+            assert isinstance(diagnostics, list), "Diagnostics should be a list"

@@ -31,3 +31,12 @@ class TestGoLanguageServer:
         assert any(
             "main.go" in ref.get("relativePath", "") for ref in refs
         ), "main.go should reference Helper (tried all positions in selectionRange)"
+
+    @pytest.mark.parametrize("language_server", [Language.GO], indirect=True)
+    def test_go_diagnostics_capability(self, language_server: SolidLanguageServer) -> None:
+        """Test that Go language server (gopls) reports diagnostics capability correctly."""
+        # gopls may or may not have diagnosticProvider depending on version
+        # If diagnostics_available is set, we should be able to request diagnostics
+        if language_server.diagnostics_available.is_set():
+            diagnostics = language_server.request_text_document_diagnostics("main.go")
+            assert isinstance(diagnostics, list), "Diagnostics should be a list"
