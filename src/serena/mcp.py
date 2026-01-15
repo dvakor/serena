@@ -332,7 +332,17 @@ class SerenaMCPFactory:
         openai_tool_compatible = self.context.name in ["chatgpt", "codex", "oaicompat-agent"]
         self._set_mcp_tools(mcp_server, openai_tool_compatible=openai_tool_compatible)
         log.info("MCP server lifetime setup complete")
-        yield
+        try:
+            yield
+        finally:
+            log.info("MCP server shutting down, cleaning up resources...")
+            if self.agent is not None:
+                try:
+                    # Use longer timeout for Java-based language servers (Spring Boot needs more time)
+                    self.agent.shutdown(timeout=10.0)
+                    log.info("SerenaAgent shutdown complete")
+                except Exception as e:
+                    log.warning(f"Error during SerenaAgent shutdown: {e}")
 
     def _get_initial_instructions(self) -> str:
         assert self.agent is not None

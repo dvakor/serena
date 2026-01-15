@@ -725,9 +725,11 @@ class SerenaAgent:
     def __del__(self) -> None:
         self.shutdown()
 
-    def shutdown(self, timeout: float = 2.0) -> None:
+    def shutdown(self, timeout: float = 5.0) -> None:
         """
         Shuts down the agent, freeing resources and stopping background tasks.
+
+        :param timeout: timeout for shutdown of each language server (default 5s for Java-based servers like BSL)
         """
         if not hasattr(self, "_is_initialized"):
             return

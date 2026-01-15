@@ -411,26 +411,40 @@ class SolidLanguageServer(ABC):
 
         # --- Main Shutdown Logic ---
         # Stage 1: Graceful Termination Request
-        # Send LSP shutdown and close stdin to signal no more input.
+        # Send LSP shutdown request, then always send exit notification.
+        # This is critical for Java-based servers (BSL with Spring Boot) that need
+        # the exit notification to call System.exit() and terminate cleanly.
         try:
             log.debug("Sending LSP shutdown request...")
             # Use a thread to timeout the LSP shutdown call since it can hang
+            # Note: self.server.shutdown() sends both shutdown request AND exit notification
             shutdown_thread = threading.Thread(target=self.server.shutdown)
             shutdown_thread.daemon = True
             shutdown_thread.start()
-            shutdown_thread.join(timeout=2.0)  # 2 second timeout for LSP shutdown
+            shutdown_thread.join(timeout=5.0)  # 5 second timeout for LSP shutdown (Spring Boot needs more time)
 
             if shutdown_thread.is_alive():
-                log.debug("LSP shutdown request timed out, proceeding to terminate...")
+                log.debug("LSP shutdown request timed out, sending exit notification separately...")
+                # Send exit notification even if shutdown timed out
+                # This is critical for Spring Boot-based servers like BSL Language Server
+                try:
+                    self.server.notify.exit()
+                    log.debug("Exit notification sent after shutdown timeout.")
+                except Exception as exit_err:
+                    log.debug(f"Failed to send exit notification: {exit_err}")
             else:
-                log.debug("LSP shutdown request completed.")
+                log.debug("LSP shutdown request completed (including exit notification).")
 
             if process.stdin and not process.stdin.closed:
                 process.stdin.close()
             log.debug("Stage 1 shutdown complete.")
         except Exception as e:
             log.debug(f"Exception during graceful shutdown: {e}")
-            # Ignore errors here, we are proceeding to terminate anyway.
+            # Try to send exit notification even on exception
+            try:
+                self.server.notify.exit()
+            except Exception:
+                pass
 
         # Stage 2: Terminate process tree and wait for process to exit
         # Use _signal_process_tree to properly terminate the entire process tree,
@@ -1896,7 +1910,7 @@ class SolidLanguageServer(ABC):
         self._start_server_process()
         return self
 
-    def stop(self, shutdown_timeout: float = 2.0) -> None:
+    def stop(self, shutdown_timeout: float = 5.0) -> None:
         """
         Stops the language server process.
         This function never raises an exception (any exceptions during shutdown are logged).

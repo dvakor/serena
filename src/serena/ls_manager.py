@@ -183,7 +183,7 @@ class LanguageServerManager:
         self._stop_language_server(ls, save_cache=save_cache)
 
     @staticmethod
-    def _stop_language_server(ls: SolidLanguageServer, save_cache: bool = False, timeout: float = 2.0) -> None:
+    def _stop_language_server(ls: SolidLanguageServer, save_cache: bool = False, timeout: float = 5.0) -> None:
         if ls.is_running():
             if save_cache:
                 ls.save_cache()
@@ -194,12 +194,12 @@ class LanguageServerManager:
         for ls in self._language_servers.values():
             yield self._ensure_functional_ls(ls)
 
-    def stop_all(self, save_cache: bool = False, timeout: float = 2.0) -> None:
+    def stop_all(self, save_cache: bool = False, timeout: float = 5.0) -> None:
         """
         Stops all managed language servers.
 
         :param save_cache: whether to save the cache before stopping
-        :param timeout: timeout for shutdown of each language server
+        :param timeout: timeout for shutdown of each language server (default 5s for Java-based servers)
         """
         for ls in self.iter_language_servers():
             self._stop_language_server(ls, save_cache=save_cache, timeout=timeout)
