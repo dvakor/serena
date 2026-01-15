@@ -1,8 +1,10 @@
+import atexit
 import collections
 import glob
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -254,6 +256,39 @@ class TopLevelCommands(AutoRegisteringGroup):
                 "Positional project arg is deprecated; use --project instead. Used: %s",
                 project_file,
             )
+
+        # Set up signal handlers and atexit to ensure cleanup runs when process terminates.
+        # This is critical for killing child processes like BSL Language Server (Java/Spring Boot)
+        # which become orphaned if Python terminates without cleanup.
+        shutdown_called = False
+
+        def cleanup_on_exit() -> None:
+            nonlocal shutdown_called
+            if shutdown_called:
+                return
+            shutdown_called = True
+            log.info("Atexit handler: Shutting down SerenaAgent...")
+            if factory.agent is not None:
+                try:
+                    factory.agent.shutdown(timeout=10.0)
+                    log.info("Atexit handler: SerenaAgent shutdown complete")
+                except Exception as e:
+                    log.warning(f"Atexit handler: Error during shutdown: {e}")
+
+        def signal_handler(signum: int, frame: Any) -> None:
+            log.info(f"Received signal {signum}, initiating graceful shutdown...")
+            # sys.exit() will trigger atexit handlers
+            sys.exit(0)
+
+        atexit.register(cleanup_on_exit)
+
+        # Install signal handlers for graceful shutdown.
+        # SIGTERM is sent by process managers, SIGINT is Ctrl+C.
+        # On Windows, only SIGINT is available.
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+
         log.info("Starting MCP server …")
         server.run(transport=transport)
 
