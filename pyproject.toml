@@ -35,6 +35,7 @@ dependencies = [
   "tqdm>=4.67.1",
   "tiktoken>=0.9.0",
   "anthropic>=0.54.0",
+  "beautifulsoup4>=4.14.2",
 ]
 
 [[tool.uv.index]]
@@ -117,6 +118,13 @@ exclude = "^build/|^docs/"
 
 [tool.poe.env]
 PYDEVD_DISABLE_FILE_VALIDATION = "1"
+
+[tool.poe.executor]
+# This is important when using poe with uv, because otherwise poe will try to run commands through
+# uv, which in turn will try to recreate the environment, which in turn will fail if any process
+# using the environment is already running! Naturally, processes using the env are running all the
+# time (e.g. a Serena MCP server), so using the default executor (uv) is not an option!
+type = "simple"
 
 [tool.poe.tasks]
 # Uses PYTEST_MARKERS env var for default markers

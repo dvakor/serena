@@ -185,6 +185,9 @@ class SerenaAgent:
         # obtain serena configuration using the decoupled factory function
         self.serena_config = serena_config or SerenaConfig.from_config_file()
 
+        # propagate configuration to other components
+        self.serena_config.propagate_settings()
+
         # project-specific instances, which will be initialized upon project activation
         self._active_project: Project | None = None
 
@@ -251,7 +254,7 @@ class SerenaAgent:
         # determine the base toolset defining the set of exposed tools (which e.g. the MCP shall see),
         # determined by the
         #   * dashboard availability/opening on launch
-        #   * Serena config,
+        #   * Serena config
         #   * the context (which is fixed for the session)
         #   * single-project mode reductions (if applicable)
         #   * JetBrains mode
@@ -268,7 +271,6 @@ class SerenaAgent:
             tool_inclusion_definitions.extend(self._single_project_context_tool_inclusion_definitions(project))
         if self.serena_config.language_backend == LanguageBackend.JETBRAINS:
             tool_inclusion_definitions.append(SerenaAgentMode.from_name_internal("jetbrains"))
-
         self._base_tool_set = ToolSet.default().apply(*tool_inclusion_definitions)
         self._exposed_tools = AvailableTools([t for t in self._all_tools.values() if self._base_tool_set.includes_name(t.get_name())])
         log.info(f"Number of exposed tools: {len(self._exposed_tools)}")
@@ -286,6 +288,7 @@ class SerenaAgent:
             modes = SerenaAgentMode.load_default_modes()
         self._modes = modes
 
+        # determine the subset of active tools (depending on active modes and the active project)
         self._active_tools: dict[type[Tool], Tool] = {}
         self._update_active_tools()
 
@@ -365,7 +368,7 @@ class SerenaAgent:
 
     def _single_project_context_tool_inclusion_definitions(self, project_root_or_name: str | None) -> list[ToolInclusionDefinition]:
         """
-        In the IDE assistant context, the agent is assumed to work on a single project, and we thus
+        When in a single-project context, the agent is assumed to work on a single project, and we thus
         want to apply that project's tool exclusions/inclusions from the get-go, limiting the set
         of tools that will be exposed to the client.
         Furthermore, we disable tools that are only relevant for project activation.
@@ -510,7 +513,10 @@ class SerenaAgent:
         The base tool set already takes the Serena configuration and the context into account
         (as well as any internal modes that are not handled dynamically, such as JetBrains mode).
         """
+        # apply modes
         tool_set = self._base_tool_set.apply(*self._modes)
+
+        # apply active project configuration (if any)
         if self._active_project is not None:
             tool_set = tool_set.apply(self._active_project.project_config)
             if self._active_project.project_config.read_only:
@@ -745,3 +751,9 @@ class SerenaAgent:
     def get_tool_by_name(self, tool_name: str) -> Tool:
         tool_class = ToolRegistry().get_tool_class_by_name(tool_name)
         return self.get_tool(tool_class)
+
+    def get_active_lsp_languages(self) -> list[Language]:
+        ls_manager = self.get_language_server_manager()
+        if ls_manager is None:
+            return []
+        return ls_manager.get_active_languages()

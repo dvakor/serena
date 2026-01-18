@@ -2,6 +2,7 @@ import os
 import socket
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from flask import Flask, Response, request, send_from_directory
@@ -9,7 +10,7 @@ from pydantic import BaseModel
 from sensai.util import logging
 
 from serena.analytics import ToolUsageStats
-from serena.config.serena_config import LanguageBackend
+from serena.config.serena_config import LanguageBackend, SerenaPaths
 from serena.constants import SERENA_DASHBOARD_DIR
 from serena.task_executor import TaskExecutor
 from serena.util.logging import MemoryLogHandler
@@ -55,6 +56,7 @@ class ResponseConfigOverview(BaseModel):
     jetbrains_mode: bool
     languages: list[str]
     encoding: str | None
+    current_client: str | None
 
 
 class ResponseAvailableLanguages(BaseModel):
@@ -317,6 +319,36 @@ class SerenaDashboardAPI:
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
+        @self._app.route("/news_snippet_ids", methods=["GET"])
+        def get_news_snippet_ids() -> dict[str, str | list[int]]:
+            def _get_unread_news_ids() -> list[int]:
+                all_news_files = (Path(SERENA_DASHBOARD_DIR) / "news").glob("*.html")
+                all_news_ids = [int(f.stem) for f in all_news_files]
+                news_snippet_id_file = SerenaPaths().news_snippet_id_file
+                if not os.path.exists(news_snippet_id_file):
+                    return all_news_ids
+                with open(news_snippet_id_file, encoding="utf-8") as f:
+                    last_read_news_id = int(f.read().strip())
+                return [news_id for news_id in all_news_ids if news_id > last_read_news_id]
+
+            try:
+                unread_news_ids = _get_unread_news_ids()
+                return {"news_snippet_ids": unread_news_ids, "status": "success"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        @self._app.route("/mark_news_snippet_as_read", methods=["POST"])
+        def mark_news_snippet_as_read() -> dict[str, str]:
+            try:
+                request_data = request.get_json()
+                news_snippet_id = int(request_data.get("news_snippet_id"))
+                news_snippet_id_file = SerenaPaths().news_snippet_id_file
+                with open(news_snippet_id_file, "w", encoding="utf-8") as f:
+                    f.write(str(news_snippet_id))
+                return {"status": "success", "message": f"Marked news snippet {news_snippet_id} as read"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
     def _get_log_messages(self, request_log: RequestLog) -> ResponseLog:
         all_messages = self._memory_log_handler.get_log_messages()
         requested_messages = all_messages[request_log.start_idx :] if request_log.start_idx <= len(all_messages) else []
@@ -339,6 +371,7 @@ class SerenaDashboardAPI:
 
     def _get_config_overview(self) -> ResponseConfigOverview:
         from serena.config.context_mode import SerenaAgentContext, SerenaAgentMode
+        from serena.tools.tools_base import Tool
 
         # Get active project info
         project = self._agent.get_active_project()
@@ -460,6 +493,7 @@ class SerenaDashboardAPI:
             jetbrains_mode=self._agent.serena_config.language_backend == LanguageBackend.JETBRAINS,
             languages=languages,
             encoding=encoding,
+            current_client=Tool.get_last_tool_call_client_str(),
         )
 
     def _shutdown(self) -> None:
@@ -562,12 +596,12 @@ class SerenaDashboardAPI:
         self._agent.remove_language(language)
 
     @staticmethod
-    def _find_first_free_port(start_port: int) -> int:
+    def _find_first_free_port(start_port: int, host: str) -> int:
         port = start_port
         while port <= 65535:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.bind(("0.0.0.0", port))
+                    sock.bind((host, port))
                     return port
             except OSError:
                 port += 1
@@ -587,7 +621,7 @@ class SerenaDashboardAPI:
         return port
 
     def run_in_thread(self, host: str) -> tuple[threading.Thread, int]:
-        port = self._find_first_free_port(0x5EDA)
+        port = self._find_first_free_port(0x5EDA, host)
         log.info("Starting dashboard (listen_address=%s, port=%d)", host, port)
         thread = threading.Thread(target=lambda: self.run(host=host, port=port), daemon=True)
         thread.start()

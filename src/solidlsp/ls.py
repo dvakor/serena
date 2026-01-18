@@ -130,6 +130,72 @@ class DocumentSymbols:
         return self._all_symbols, self.root_symbols
 
 
+class LanguageServerDependencyProvider(ABC):
+    """
+    Prepares dependencies for a language server (if any), ultimately enabling the launch command to be constructed
+    and optionally providing environment variables that are necessary for the execution.
+    """
+
+    def __init__(self, custom_settings: SolidLSPSettings.CustomLSSettings, ls_resources_dir: str):
+        self._custom_settings = custom_settings
+        self._ls_resources_dir = ls_resources_dir
+
+    @abstractmethod
+    def create_launch_command(self) -> list[str] | str:
+        """
+        Creates the launch command for this language server, potentially downloading and installing dependencies
+        beforehand.
+
+        :return: the launch command as a list containing the executable and its arguments (preferred for robustness)
+           or the entire command in a single string.
+        """
+
+    def create_launch_command_env(self) -> dict[str, str]:
+        """
+        Provides environment variables to be set when executing the launch command.
+
+        This method is intended to be overridden by subclasses that need to set variables.
+
+        :return: a mapping for variable names to values
+        """
+        return {}
+
+
+class LanguageServerDependencyProviderSinglePath(LanguageServerDependencyProvider, ABC):
+    """
+    Special case of a dependency provider, where there is a single core dependency which provides
+    the basis for the launch command.
+
+    The core dependency's path can be overridden by the user in LS-specific settings (SerenaConfig)
+    via the key "ls_path". If the user provides the key, the specified path is used directly.
+    Otherwise, the provider implementation is called to get or install the core dependency.
+    """
+
+    @abstractmethod
+    def _get_or_install_core_dependency(self) -> str:
+        """
+        Gets the language server's core path, potentially installing dependencies beforehand.
+
+        :return: the core dependency's path (e.g. executable, jar, etc.)
+        """
+
+    def create_launch_command(self) -> Union[str, list[str]]:
+        path = self._custom_settings.get("ls_path", None)
+        if path is not None:
+            core_path = path
+        else:
+            core_path = self._get_or_install_core_dependency()
+        return self._create_launch_command(core_path)
+
+    @abstractmethod
+    def _create_launch_command(self, core_path: str) -> list[str] | str:
+        """
+        :param core_path: path to the core dependency
+        :return: the launch command as a list containing the executable and its arguments (preferred for robustness)
+           or the entire command in a single string.
+        """
+
+
 class SolidLanguageServer(ABC):
     """
     The LanguageServer class provides a language agnostic interface to the Language Server Protocol.
@@ -242,7 +308,7 @@ class SolidLanguageServer(ABC):
         self,
         config: LanguageServerConfig,
         repository_root_path: str,
-        process_launch_info: ProcessLaunchInfo,
+        process_launch_info: ProcessLaunchInfo | None,
         language_id: str,
         solidlsp_settings: SolidLSPSettings,
         cache_version_raw_document_symbols: Hashable = 1,
@@ -254,7 +320,8 @@ class SolidLanguageServer(ABC):
 
         :param config: the global SolidLSP configuration.
         :param repository_root_path: the root path of the repository.
-        :param process_launch_info: the command used to start the actual language server.
+        :param process_launch_info: (DEPRECATED - implement _create_dependency_provider instead)
+            the command used to start the actual language server.
             The command must pass appropriate flags to the binary, so that it runs in the stdio mode,
             as opposed to HTTP, TCP modes supported by some language servers.
         :param cache_version_raw_document_symbols: the version, for caching, of the raw document symbols coming
@@ -265,9 +332,11 @@ class SolidLanguageServer(ABC):
         self._solidlsp_settings = solidlsp_settings
         lang = self.get_language_enum_instance()
         self._custom_settings = solidlsp_settings.get_ls_specific_settings(lang)
+        self._ls_resources_dir = self.ls_resources_dir(solidlsp_settings)
         log.debug(f"Custom config (LS-specific settings) for {lang}: {self._custom_settings}")
         self._encoding = config.encoding
         self.repository_root_path: str = repository_root_path
+
         log.debug(
             f"Creating language server instance for {repository_root_path=} with {language_id=} and process launch info: {process_launch_info}"
         )
@@ -304,8 +373,12 @@ class SolidLanguageServer(ABC):
         else:
             logging_fn = None  # type: ignore
 
-        # cmd is obtained from the child classes, which provide the language specific command to start the language server
-        # LanguageServerHandler provides the functionality to start the language server and communicate with it
+        # create the LanguageServerHandler, which provides the functionality to start the language server and communicate with it,
+        # preparing the launch command beforehand
+        self._dependency_provider: LanguageServerDependencyProvider | None = None
+        if process_launch_info is None:
+            self._dependency_provider = self._create_dependency_provider()
+            process_launch_info = self._create_process_launch_info()
         log.debug(f"Creating language server instance with {language_id=} and process launch info: {process_launch_info}")
         self.server = SolidLanguageServerHandler(
             process_launch_info,
@@ -330,6 +403,23 @@ class SolidLanguageServer(ABC):
         self._request_timeout: float | None = None
 
         self._has_waited_for_cross_file_references = False
+
+    def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
+        """
+        Creates the dependency provider for this language server.
+
+        Subclasses should override this method to provide their specific dependency provider.
+        This method is only called if process_launch_info is not passed to __init__.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _create_dependency_provider() or pass process_launch_info to __init__()"
+        )
+
+    def _create_process_launch_info(self) -> ProcessLaunchInfo:
+        assert self._dependency_provider is not None
+        cmd = self._dependency_provider.create_launch_command()
+        env = self._dependency_provider.create_launch_command_env()
+        return ProcessLaunchInfo(cmd=cmd, cwd=self.repository_root_path, env=env)
 
     def _get_wait_time_for_cross_file_referencing(self) -> float:
         """Meant to be overridden by subclasses for LS that don't have a reliable "finished initializing" signal.
@@ -1345,11 +1435,57 @@ class SolidLanguageServer(ABC):
         :param relative_file_path: The relative path of the file that has the hover information
         :param line: The line number of the symbol
         :param column: The column number of the symbol
+        """
+        with self.open_file(relative_file_path):
+            uri = pathlib.Path(os.path.join(self.repository_root_path, relative_file_path)).as_uri()
+            return self._request_hover(uri, line, column)
+
+    def _request_hover(self, uri: str, line: int, column: int) -> ls_types.Hover | None:
+        """
+        Internal method that performs the actual hover request.
+        The file must already be open when calling this method.
+        Subclasses can override this to customize hover behavior (e.g., retries).
+
+        :param uri: The URI of the file
+        :param line: The line number of the symbol
+        :param column: The column number of the symbol
+        """
+        response = self.server.send.hover(
+            {
+                "textDocument": {"uri": uri},
+                "position": {
+                    "line": line,
+                    "character": column,
+                },
+            }
+        )
+
+        if response is None:
+            return None
+
+        assert isinstance(response, dict)
+        contents = response.get("contents")
+        if not contents:
+            return None
+        if isinstance(contents, dict) and not contents.get("value"):
+            return None
+        return ls_types.Hover(**response)  # type: ignore
+
+    def request_signature_help(self, relative_file_path: str, line: int, column: int) -> ls_types.SignatureHelp | None:
+        """
+        Raise a [textDocument/signatureHelp](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_signatureHelp)
+        request to the Language Server to find the signature help at the given line and column in the given file.
+        Note: contrary to `hover`, this only returns something on the position of a *call* and not on a symbol definition.
+        This means for Serena's purposes, this method is not particularly useful. The result is also fairly verbose (but well structured).
+
+        :param relative_file_path: The relative path of the file that has the signature help
+        :param line: The line number of the symbol
+        :param column: The column number of the symbol
 
         :return None
         """
         with self.open_file(relative_file_path):
-            response = self.server.send.hover(
+            response = self.server.send.signature_help(
                 {
                     "textDocument": {"uri": pathlib.Path(os.path.join(self.repository_root_path, relative_file_path)).as_uri()},
                     "position": {
@@ -1364,7 +1500,7 @@ class SolidLanguageServer(ABC):
 
         assert isinstance(response, dict)
 
-        return ls_types.Hover(**response)  # type: ignore
+        return ls_types.SignatureHelp(**response)  # type: ignore
 
     def retrieve_symbol_body(
         self,
@@ -1722,6 +1858,29 @@ class SolidLanguageServer(ABC):
 
         return defining_symbol
 
+    def _cache_context_fingerprint(self) -> Hashable | None:
+        """
+        Return a fingerprint of any language-server-specific context that affects cached results.
+
+        Subclasses may override to provide a deterministic value that changes when cached results
+        would be invalidated (e.g., build flags, environment variables).
+
+        The value must be hashable and safe for inclusion in cache version tuples.
+        Returns None if no context-specific fingerprint is needed.
+        """
+        return None
+
+    def _document_symbols_cache_version(self) -> Hashable:
+        """
+        Return the version for the document symbols cache.
+
+        Incorporates cache context fingerprint if provided by the language server.
+        """
+        fingerprint = self._cache_context_fingerprint()
+        if fingerprint is not None:
+            return (self.DOCUMENT_SYMBOL_CACHE_VERSION, fingerprint)
+        return self.DOCUMENT_SYMBOL_CACHE_VERSION
+
     def _save_raw_document_symbols_cache(self) -> None:
         cache_file = self.cache_dir / self.RAW_DOCUMENT_SYMBOL_CACHE_FILENAME
 
@@ -1740,8 +1899,12 @@ class SolidLanguageServer(ABC):
                 e,
             )
 
-    def _raw_document_symbols_cache_version(self) -> tuple[int, Hashable]:
-        return (self.RAW_DOCUMENT_SYMBOLS_CACHE_VERSION, self._ls_specific_raw_document_symbols_cache_version)
+    def _raw_document_symbols_cache_version(self) -> tuple[Hashable, ...]:
+        base_version: tuple[Hashable, ...] = (self.RAW_DOCUMENT_SYMBOLS_CACHE_VERSION, self._ls_specific_raw_document_symbols_cache_version)
+        fingerprint = self._cache_context_fingerprint()
+        if fingerprint is not None:
+            return (*base_version, fingerprint)
+        return base_version
 
     def _load_raw_document_symbols_cache(self) -> None:
         cache_file = self.cache_dir / self.RAW_DOCUMENT_SYMBOL_CACHE_FILENAME
@@ -1797,7 +1960,7 @@ class SolidLanguageServer(ABC):
 
         log.info("Saving updated document symbols cache to %s", cache_file)
         try:
-            save_cache(str(cache_file), self.DOCUMENT_SYMBOL_CACHE_VERSION, self._document_symbols_cache)
+            save_cache(str(cache_file), self._document_symbols_cache_version(), self._document_symbols_cache)
             self._document_symbols_cache_is_modified = False
         except Exception as e:
             log.error(
@@ -1811,7 +1974,7 @@ class SolidLanguageServer(ABC):
         if cache_file.exists():
             log.info("Loading document symbols cache from %s", cache_file)
             try:
-                saved_cache = load_cache(str(cache_file), self.DOCUMENT_SYMBOL_CACHE_VERSION)
+                saved_cache = load_cache(str(cache_file), self._document_symbols_cache_version())
                 if saved_cache is not None:
                     self._document_symbols_cache = saved_cache
                     log.info(f"Loaded {len(self._document_symbols_cache)} entries from document symbols cache.")
