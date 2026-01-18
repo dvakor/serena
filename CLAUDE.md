@@ -1,3 +1,22 @@
+<!-- OPENSPEC:START -->
+# OpenSpec Instructions
+
+These instructions are for AI assistants working in this project.
+
+Always open `@/openspec/AGENTS.md` when the request:
+- Mentions planning or proposals (words like proposal, spec, change, plan)
+- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work
+- Sounds ambiguous and you need the authoritative spec before coding
+
+Use `@/openspec/AGENTS.md` to learn:
+- How to create and apply change proposals
+- Spec format and conventions
+- Project structure and guidelines
+
+Keep this managed block so 'openspec update' can refresh the instructions.
+
+<!-- OPENSPEC:END -->
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -104,6 +123,35 @@ Configuration is loaded from (in order of precedence):
 - **Multi-language support** - 19 languages with LSP integration (including Vue)
 - **MCP protocol** - Exposes tools to AI agents via Model Context Protocol
 - **Async operation** - Non-blocking language server interactions
+
+## BSL Language Server Configuration
+
+BSL Language Server provides support for 1C:Enterprise 8 (*.bsl) and OneScript (*.os) files.
+
+**Configuration options** in `~/.serena/serena_config.yml`:
+
+```yaml
+ls_specific_settings:
+  bsl:
+    memory: "4G"        # JVM heap size (default: 4G, matches VS Code extension)
+    version: "0.28.0"   # Pin specific version (optional, disables auto-updates)
+    jvm_options: ""     # Additional JVM options (optional)
+```
+
+**Features:**
+- **Configurable JVM memory** - Default 4G matches VS Code BSL extension
+- **Automatic config detection** - `.bsl-language-server.json` in project root is auto-detected
+- **Auto-updates** - New versions downloaded in background, applied on restart
+- **Version pinning** - Set `version` to disable auto-updates and use specific release
+
+**Memory priority:**
+1. Explicit `memory` setting
+2. `-Xmx` extracted from `jvm_options` (backward compatibility)
+3. Default: `4G`
+
+**Project-level config:**
+Place `.bsl-language-server.json` in project root for diagnostics language and other settings.
+This file is automatically passed to the language server.
 
 ## Working with the Codebase
 
