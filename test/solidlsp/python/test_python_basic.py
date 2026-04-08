@@ -12,6 +12,7 @@ import pytest
 from serena.project import Project
 from serena.util.text_utils import LineType
 from solidlsp import SolidLanguageServer
+from solidlsp.ls_config import Language
 from test.solidlsp.conftest import PYTHON_BACKEND_LANGUAGES, format_symbol_for_assert, has_malformed_name, request_all_symbols
 
 

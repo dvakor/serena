@@ -335,7 +335,7 @@ class TopLevelCommands(AutoRegisteringGroup):
             log.info("Atexit handler: Shutting down SerenaAgent...")
             if factory.agent is not None:
                 try:
-                    factory.agent.shutdown(timeout=10.0)
+                    factory.agent.on_shutdown(timeout=10.0)
                     log.info("Atexit handler: SerenaAgent shutdown complete")
                 except Exception as e:
                     log.warning(f"Atexit handler: Error during shutdown: {e}")
