@@ -75,11 +75,26 @@ object, e.g.
 
 Serena is a great way to make Claude Code both cheaper and more powerful!
 
-**Per-Project Configuration.** To add the Serena MCP server to the current project in the current directory, 
-use this command:
+:::{note}
+Serena might take some time to start up, especially on the first run.
+To make sure that enough time is available for the server to start,
+set `MCP_TIMEOUT` to a sufficiently high value (e.g. by adding `export MCP_TIMEOUT=60000` to your shell profile)
+before starting Claude Code.
+
+Confirm that Claude Code is connected to Serena by running the `/mcp` command and by reconnecting, if necessary.
+:::
+
+**Global Configuration**. To add the Serena MCP server for all your projects, use the user-level configuration of claude code and the `--project-from-cwd` flag:
 
 ```shell
-claude mcp add serena -- uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context claude-code --project "$(pwd)"
+claude mcp add --scope user serena -- uvx --python 3.13 --from git+https://github.com/oraios/serena serena start-mcp-server --context=claude-code --project-from-cwd
+```
+
+**Per-Project Configuration.** Alternatively, to add Serena only for the current project in the current directory, 
+use the command:
+
+```shell
+claude mcp add serena -- uvx --python 3.13 --from git+https://github.com/oraios/serena serena start-mcp-server --context claude-code --project "$(pwd)"
 ```
 
 Note:
@@ -89,14 +104,8 @@ Note:
     that Serena is configured to work on the current project from the get-go, following 
     Claude Code's mode of operation.
 
-**Global Configuration**. Alternatively, use `--project-from-cwd` for user-level configuration that works across all projects:
-
-```shell
-claude mcp add --scope user serena -- uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context=claude-code --project-from-cwd
-```
-
 Whenever you start Claude Code, Serena will search up from the current directory for `.serena/project.yml` or `.git` markers,
-activating the current directory as the project if neither is found. 
+activating the containing directory as the project (if any). 
 This mechanism makes it suitable for a single global MCP configuration.
 
 **Maximum Token Efficiency.** To maximize token efficiency, you may want to use Claude Code's 
@@ -128,6 +137,8 @@ While serena can be directly installed from the GitHub MCP server registry, we r
       "type": "stdio",
       "command": "uvx",
       "args": [
+        "-p",
+        "3.13",
         "--from",
         "git+https://github.com/oraios/serena",
         "serena",
@@ -145,7 +156,7 @@ While serena can be directly installed from the GitHub MCP server registry, we r
 
 ## Codex
 
-Serena works with OpenAI's Codex CLI out of the box, but you have to use the `codex` context for it to work properly. (The technical reason is that Codex doesn't fully support the MCP specifications, so some massaging of tools is required.).
+Serena works with OpenAI's Codex CLI and app out of the box, but you have to use the `codex` context for it to work properly. (The technical reason is that Codex doesn't fully support the MCP specifications, so some massaging of tools is required.).
 
 Add a [run command](020_running) to `~/.codex/config.toml` to configure Serena for all Codex sessions;
 create the file if it does not exist.
@@ -153,23 +164,24 @@ For example, when using `uvx`, add the following section:
 
 ```toml
 [mcp_servers.serena]
+startup_timeout_sec = 25
 command = "uvx"
-args = ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context", "codex"]
+args = ["-p", "3.13", "--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--project-from-cwd", "--context", "codex"]
 ```
 
-After codex has started, you need to activate the project, which you can do by saying:
+The larger startup timeout is to permit uvx to download the necessary dependencies. Once downloaded, the startup time is much faster.
 
-"Activate the current dir as project using serena"
+:::{note}
+The codex app does not start a session in the project's directory, so when using the app, you will have to 
+ask Codex to "Activate the current dir as project using serena" at the start of each session. 
+This is not necessary when using the codex CLI.
+:::
 
-> If you don't activate the project, you will not be able to use Serena's tools!
-
-That's it! Have a look at `~/.codex/log/codex-tui.log` to see if any errors occurred.
-
-Serena's dashboard will run if you have not disabled it in the configuration, but due to Codex's sandboxing, the web browser
-may not open automatically. You can open it manually by going to `http://localhost:24282/dashboard/index.html` (or a higher port, if
-that was already taken).
-
-> Codex will often show the tools as `failed` even though they are successfully executed. This is not a problem, seems to be a bug in Codex. Despite the error message, everything works as expected.
+:::{attention}
+Codex currently ignores the [instructions](https://blog.modelcontextprotocol.io/posts/2025-11-03-using-server-instructions/) 
+property of MCP servers, so it is recommended to prompt the agent to 
+"read initial instructions for Serena" when starting your session, e.g. by mentioning this in your `AGENT.md`.
+:::
 
 ## Claude Desktop
 
@@ -187,6 +199,8 @@ Add the `serena` MCP server configuration
     "serena": {
       "command": "uvx",
       "args": [
+        "-p",
+        "3.13",
         "--from",
         "git+https://github.com/oraios/serena",
         "serena",
@@ -223,6 +237,8 @@ MCP server configuration:
     "serena": {
       "command": "uvx",
       "args": [
+        "-p",
+        "3.13",
         "--from",
         "git+https://github.com/oraios/serena",
         "serena",
@@ -251,6 +267,8 @@ Go to Settings / Tools / AI Assistant / MCP and add a new **local** configuratio
     "serena": {
       "command": "uvx",
       "args": [
+        "-p",
+        "3.13",
         "--from",
         "git+https://github.com/oraios/serena",
         "serena",
@@ -269,13 +287,6 @@ Then make sure to configure the working directory to be the project root.
 
 ## Antigravity
 
-:::{warning}
-At the time of writing (12/2025), Antigravity does not seem to work with Serena due to schema validation issues
-which are beyond our control.
-The client starts Serena but then crashes with `[internal] marshal message: string field contains invalid UTF-8`.  
-Nevertheless, we provide a configuration that should work once the issue is resolved.
-:::
-
 Add this configuration:
 
 ```json
@@ -284,6 +295,8 @@ Add this configuration:
     "serena": {
       "command": "uvx",
       "args": [
+        "-p",
+        "3.13",
         "--from",
         "git+https://github.com/oraios/serena",
         "serena",
@@ -295,6 +308,12 @@ Add this configuration:
   }
 }
 ```
+
+You will have to prompt Antigravity's agent to "Activate the current project using serena's activation tool" after starting Antigravity in the project directory (once in the first chat enough, all other chat sessions will continue using the same Serena session).
+
+
+Unlike VSCode, Antigravity does not currently support including the working directory in the MCP configuration.
+Also, the current client will be shown as `none` in Serena's dashboard (Antigravity currently does not fully support the MCP specifications). This is not a problem, all tools will work as expected.
 
 ## Other Clients
 

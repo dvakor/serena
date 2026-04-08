@@ -8,7 +8,6 @@ import pathlib
 import platform
 import shutil
 import subprocess
-import threading
 
 from overrides import override
 
@@ -71,8 +70,7 @@ class ZigLanguageServer(SolidLanguageServer):
         # Check for Windows and provide error message
         if platform.system() == "Windows":
             raise RuntimeError(
-                "Windows is not supported by ZLS in this integration. "
-                "Cross-file references don't work reliably on Windows. Reason unknown."
+                "Windows is not supported by ZLS in this integration. Cross-file references don't work reliably on Windows. Reason unknown."
             )
 
         zig_version = ZigLanguageServer._get_zig_version()
@@ -100,7 +98,6 @@ class ZigLanguageServer(SolidLanguageServer):
         self._setup_runtime_dependency()
 
         super().__init__(config, repository_root_path, ProcessLaunchInfo(cmd="zls", cwd=repository_root_path), "zig", solidlsp_settings)
-        self.server_ready = threading.Event()
         self.request_id = 0
 
     @staticmethod
@@ -213,11 +210,9 @@ class ZigLanguageServer(SolidLanguageServer):
         assert "referencesProvider" in init_response["capabilities"]
 
         self.server.notify.initialized({})
-        self.completions_available.set()
 
         # ZLS server is ready after initialization
-        self.server_ready.set()
-        self.server_ready.wait()
+        # (no need to wait for an event)
 
         # Open build.zig if it exists to help ZLS understand project structure
         build_zig_path = os.path.join(self.repository_root_path, "build.zig")

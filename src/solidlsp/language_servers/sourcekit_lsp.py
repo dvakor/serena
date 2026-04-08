@@ -2,14 +2,15 @@ import logging
 import os
 import pathlib
 import subprocess
-import threading
 import time
+from collections.abc import Hashable
 
 from overrides import override
 
 from solidlsp import ls_types
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import RawDocumentSymbol, SolidLanguageServer
 from solidlsp.ls_config import LanguageServerConfig
+from solidlsp.ls_types import SymbolKind
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
@@ -53,10 +54,26 @@ class SourceKitLSP(SolidLanguageServer):
         super().__init__(
             config, repository_root_path, ProcessLaunchInfo(cmd="sourcekit-lsp", cwd=repository_root_path), "swift", solidlsp_settings
         )
-        self.server_ready = threading.Event()
         self.request_id = 0
         self._did_sleep_before_requesting_references = False
         self._initialization_timestamp: float | None = None
+
+    @override
+    def _document_symbols_cache_fingerprint(self) -> Hashable:
+        normalize_symbol_name_version = 1
+        return normalize_symbol_name_version
+
+    @override
+    def _normalize_symbol_name(self, symbol: RawDocumentSymbol, relative_file_path: str) -> str:
+        original_name = symbol["name"]
+
+        if symbol.get("kind") not in (SymbolKind.Function, SymbolKind.Method, SymbolKind.Constructor):
+            return original_name
+
+        if "(" not in original_name:
+            return original_name
+
+        return original_name.split("(", 1)[0].strip()
 
     @staticmethod
     def _get_initialize_params(repository_absolute_path: str) -> InitializeParams:
@@ -332,10 +349,6 @@ class SourceKitLSP(SolidLanguageServer):
         assert "definitionProvider" in capabilities, "definitionProvider capability missing"
 
         self.server.notify.initialized({})
-        self.completions_available.set()
-
-        self.server_ready.set()
-        self.server_ready.wait()
 
         # Mark initialization timestamp for smarter delay calculation
         self._initialization_timestamp = time.time()

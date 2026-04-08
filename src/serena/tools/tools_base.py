@@ -1,7 +1,7 @@
 import inspect
 import json
 from abc import ABC
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Protocol, Self, TypeVar, cast
@@ -12,16 +12,17 @@ from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata, func_metada
 from sensai.util import logging
 from sensai.util.string import dict_string
 
+from serena.config.serena_config import LanguageBackend
 from serena.project import MemoriesManager, Project
 from serena.prompt_factory import PromptFactory
-from serena.symbol import LanguageServerSymbolRetriever
 from serena.util.class_decorators import singleton
 from serena.util.inspection import iter_subclasses
 from solidlsp.ls_exceptions import SolidLSPException
 
 if TYPE_CHECKING:
     from serena.agent import SerenaAgent
-    from serena.code_editor import CodeEditor
+    from serena.code_editor import CodeEditor, LanguageServerCodeEditor
+    from serena.symbol import LanguageServerSymbolRetriever
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -36,7 +37,7 @@ class Component(ABC):
         """
         :return: the root directory of the active project, raises a ValueError if no active project configuration is set
         """
-        return self.agent.get_project_root()
+        return self.project.project_root
 
     @property
     def prompt_factory(self) -> PromptFactory:
@@ -46,23 +47,33 @@ class Component(ABC):
     def memories_manager(self) -> "MemoriesManager":
         return self.project.memories_manager
 
-    def create_language_server_symbol_retriever(self) -> LanguageServerSymbolRetriever:
-        if not self.agent.is_using_language_server():
-            raise Exception("Cannot create LanguageServerSymbolRetriever; agent is not in language server mode.")
-        language_server_manager = self.agent.get_language_server_manager_or_raise()
-        return LanguageServerSymbolRetriever(language_server_manager, agent=self.agent)
+    def create_language_server_symbol_retriever(self) -> "LanguageServerSymbolRetriever":
+        from serena.symbol import LanguageServerSymbolRetriever
+
+        assert self.agent.get_language_backend().is_lsp(), "Language server symbol retriever can only be created for LSP language backend"
+        return LanguageServerSymbolRetriever(self.project)
 
     @property
     def project(self) -> Project:
         return self.agent.get_active_project_or_raise()
 
     def create_code_editor(self) -> "CodeEditor":
-        from ..code_editor import JetBrainsCodeEditor, LanguageServerCodeEditor
+        from ..code_editor import JetBrainsCodeEditor
 
-        if self.agent.is_using_language_server():
-            return LanguageServerCodeEditor(self.create_language_server_symbol_retriever(), agent=self.agent)
-        else:
-            return JetBrainsCodeEditor(project=self.project, agent=self.agent)
+        match self.agent.get_language_backend():
+            case LanguageBackend.LSP:
+                return self.create_ls_code_editor()
+            case LanguageBackend.JETBRAINS:
+                return JetBrainsCodeEditor(project=self.project)
+            case _:
+                raise ValueError
+
+    def create_ls_code_editor(self) -> "LanguageServerCodeEditor":
+        from ..code_editor import LanguageServerCodeEditor
+
+        if not self.agent.is_using_language_server():
+            raise Exception("Cannot create LanguageServerCodeEditor; agent is not in language server mode.")
+        return LanguageServerCodeEditor(self.create_language_server_symbol_retriever())
 
 
 class ToolMarker:
@@ -96,6 +107,12 @@ class ToolMarkerSymbolicRead(ToolMarker):
 class ToolMarkerSymbolicEdit(ToolMarkerCanEdit):
     """
     Marker class for tools that perform symbolic edit operations.
+    """
+
+
+class ToolMarkerBeta(ToolMarker):
+    """
+    Marker for tools that are considered beta features (may not be fully robust)
     """
 
 
@@ -217,20 +234,46 @@ class Tool(Component):
                 params[param] = value
         log.info(f"{self.get_name_from_cls()}: {dict_string(params)}")
 
-    def _limit_length(self, result: str, max_answer_chars: int) -> str:
+    def _limit_length(
+        self,
+        result: str,
+        max_answer_chars: int,
+        shortened_result_factories: list[Callable[[], str]] | None = None,
+    ) -> str:
+        """Limit the length of the result string, optionally trying progressively shorter versions.
+
+        :param result: the full result string
+        :param max_answer_chars: maximum allowed characters. -1 means use the default from config.
+        :param shortened_result_factories: optional list of closures, each producing a progressively shorter
+            version of the result. They are tried in order until one fits within ``max_answer_chars``.
+        :return: the result string, potentially replaced by a shortened version
+        """
         if max_answer_chars == -1:
             max_answer_chars = self.agent.serena_config.default_max_tool_answer_chars
         if max_answer_chars <= 0:
             raise ValueError(f"Must be positive or the default (-1), got: {max_answer_chars=}")
         if (n_chars := len(result)) > max_answer_chars:
-            result = (
-                f"The answer is too long ({n_chars} characters). "
-                + "Please try a more specific tool query or raise the max_answer_chars parameter."
+            too_long_msg = (
+                f"The answer is too long ({n_chars} characters). " + "You can adjust your query or raise the max_answer_chars parameter."
             )
+            if shortened_result_factories is not None:
+                # try each shortening closure in order;
+                for make_shorter in shortened_result_factories:
+                    shortened = make_shorter()
+                    candidate = f"{too_long_msg}\n{shortened}"
+                    if len(candidate) <= max_answer_chars:
+                        return candidate
+            result = too_long_msg
         return result
 
     def is_active(self) -> bool:
-        return self.agent.tool_is_active(self.__class__)
+        return self.agent.tool_is_active(self.get_name())
+
+    def is_readonly(self) -> bool:
+        return not self.can_edit()
+
+    def is_symbolic(self) -> bool:
+        return issubclass(self.__class__, ToolMarkerSymbolicRead) or issubclass(self.__class__, ToolMarkerSymbolicEdit)
 
     def apply_ex(self, log_call: bool = True, catch_exceptions: bool = True, mcp_ctx: Context | None = None, **kwargs) -> str:  # type: ignore
         """
@@ -370,7 +413,15 @@ class EditedFileContext:
 class RegisteredTool:
     tool_class: type[Tool]
     is_optional: bool
+    is_beta: bool
     tool_name: str
+
+    @property
+    def class_docstring(self) -> str:
+        """
+        :return: the tool description (high-level class docstring)
+        """
+        return self.tool_class.get_tool_description()
 
 
 tool_packages = ["serena.tools"]
@@ -380,16 +431,35 @@ tool_packages = ["serena.tools"]
 class ToolRegistry:
     def __init__(self) -> None:
         self._tool_dict: dict[str, RegisteredTool] = {}
-        for cls in iter_subclasses(Tool):
+        inclusion_predicate = lambda c: "apply" in c.__dict__  # include only concrete tool classes that implement apply
+        for cls in iter_subclasses(Tool, inclusion_predicate=inclusion_predicate):
             if not any(cls.__module__.startswith(pkg) for pkg in tool_packages):
                 continue
             is_optional = issubclass(cls, ToolMarkerOptional)
+            is_beta = issubclass(cls, ToolMarkerBeta)
             name = cls.get_name_from_cls()
             if name in self._tool_dict:
                 raise ValueError(f"Duplicate tool name found: {name}. Tool classes must have unique names.")
-            self._tool_dict[name] = RegisteredTool(tool_class=cls, is_optional=is_optional, tool_name=name)
+            self._tool_dict[name] = RegisteredTool(tool_class=cls, is_optional=is_optional, tool_name=name, is_beta=is_beta)
+
+    def get_registered_tools_by_module(self) -> dict[str, list[RegisteredTool]]:
+        """
+        :return: the registered tools grouped by their module (ordered alphabetically by module and tool name)
+        """
+        module_dict: dict[str, list[RegisteredTool]] = {}
+        for tool in self._tool_dict.values():
+            module = tool.tool_class.__module__
+            if module not in module_dict:
+                module_dict[module] = []
+            module_dict[module].append(tool)
+        sorted_module_dict = {}
+        for module in sorted(module_dict.keys()):
+            sorted_module_dict[module] = sorted(module_dict[module], key=lambda t: t.tool_name)
+        return sorted_module_dict
 
     def get_tool_class_by_name(self, tool_name: str) -> type[Tool]:
+        if tool_name not in self._tool_dict:
+            raise ValueError(f"Tool named '{tool_name}' not found.")
         return self._tool_dict[tool_name].tool_class
 
     def get_all_tool_classes(self) -> list[type[Tool]]:

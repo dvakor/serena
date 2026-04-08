@@ -2,6 +2,7 @@
 
 import logging
 import os
+import pathlib
 import shutil
 import subprocess
 import threading
@@ -134,7 +135,7 @@ class ErlangLanguageServer(SolidLanguageServer):
         initialize_params = {
             "processId": None,
             "rootPath": self.repository_root_path,
-            "rootUri": f"file://{self.repository_root_path}",
+            "rootUri": pathlib.Path(self.repository_root_path).as_uri(),
             "capabilities": {
                 "textDocument": {
                     "synchronization": {"didSave": True},
@@ -155,7 +156,6 @@ class ErlangLanguageServer(SolidLanguageServer):
             log.info(f"Erlang LS capabilities: {list(init_response['capabilities'].keys())}")
 
         self.server.notify.initialized({})
-        self.completions_available.set()
 
         # Wait for Erlang LS to be ready - adjust timeout based on environment
         is_ci = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"

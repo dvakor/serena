@@ -21,9 +21,9 @@ from serena.agent import (
     SerenaAgent,
     SerenaConfig,
 )
-from serena.config.context_mode import SerenaAgentContext, SerenaAgentMode
-from serena.config.serena_config import LanguageBackend
-from serena.constants import DEFAULT_CONTEXT, DEFAULT_MODES, SERENA_LOG_FORMAT
+from serena.config.context_mode import SerenaAgentContext
+from serena.config.serena_config import LanguageBackend, ModeSelectionDefinition
+from serena.constants import DEFAULT_CONTEXT, SERENA_LOG_FORMAT
 from serena.tools import Tool
 from serena.util.exception import show_fatal_exception_safe
 from serena.util.logging import MemoryLogHandler
@@ -260,7 +260,7 @@ class SerenaMCPFactory:
                 mcp._tool_manager._tools[tool.get_name()] = mcp_tool
             log.info(f"Starting MCP server with {len(mcp._tool_manager._tools)} tools: {list(mcp._tool_manager._tools.keys())}")
 
-    def _create_serena_agent(self, serena_config: SerenaConfig, modes: list[SerenaAgentMode]) -> SerenaAgent:
+    def _create_serena_agent(self, serena_config: SerenaConfig, modes: ModeSelectionDefinition | None = None) -> SerenaAgent:
         return SerenaAgent(
             project=self.project, serena_config=serena_config, context=self.context, modes=modes, memory_log_handler=self.memory_log_handler
         )
@@ -270,9 +270,9 @@ class SerenaMCPFactory:
 
     def create_mcp_server(
         self,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 8000,
-        modes: Sequence[str] = DEFAULT_MODES,
+        modes: Sequence[str] = (),
         language_backend: LanguageBackend | None = None,
         enable_web_dashboard: bool | None = None,
         enable_gui_log_window: bool | None = None,
@@ -305,7 +305,7 @@ class SerenaMCPFactory:
             if enable_web_dashboard is not None:
                 config.web_dashboard = enable_web_dashboard
             if enable_gui_log_window is not None:
-                config.gui_log_window_enabled = enable_gui_log_window
+                config.gui_log_window = enable_gui_log_window
             if open_web_dashboard is not None:
                 config.web_dashboard_open_on_launch = open_web_dashboard
             if log_level is not None:
@@ -318,8 +318,10 @@ class SerenaMCPFactory:
             if language_backend is not None:
                 config.language_backend = language_backend
 
-            modes_instances = [SerenaAgentMode.load(mode) for mode in modes]
-            self.agent = self._create_serena_agent(config, modes_instances)
+            mode_selection_def: ModeSelectionDefinition | None = None
+            if modes:
+                mode_selection_def = ModeSelectionDefinition(default_modes=modes)
+            self.agent = self._create_serena_agent(config, mode_selection_def)
 
         except Exception as e:
             show_fatal_exception_safe(e)
@@ -346,7 +348,7 @@ class SerenaMCPFactory:
             if self.agent is not None:
                 try:
                     # Use longer timeout for Java-based language servers (Spring Boot needs more time)
-                    self.agent.shutdown(timeout=10.0)
+                    self.agent.on_shutdown(timeout=10.0)
                     log.info("SerenaAgent shutdown complete")
                 except Exception as e:
                     log.warning(f"Error during SerenaAgent shutdown: {e}")

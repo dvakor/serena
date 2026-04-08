@@ -4,37 +4,25 @@ import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator, Reversible
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Generic, Optional, TypeVar, cast
+from typing import Generic, TypeVar, cast
 
+from serena.jetbrains.jetbrains_plugin_client import JetBrainsPluginClient
 from serena.symbol import JetBrainsSymbol, LanguageServerSymbol, LanguageServerSymbolRetriever, PositionInFile, Symbol
 from solidlsp import SolidLanguageServer, ls_types
 from solidlsp.ls import LSPFileBuffer
 from solidlsp.ls_utils import PathUtils, TextUtils
 
-from .constants import DEFAULT_SOURCE_FILE_ENCODING
 from .project import Project
-from .tools.jetbrains_plugin_client import JetBrainsPluginClient
-
-if TYPE_CHECKING:
-    from .agent import SerenaAgent
-
 
 log = logging.getLogger(__name__)
 TSymbol = TypeVar("TSymbol", bound=Symbol)
 
 
 class CodeEditor(Generic[TSymbol], ABC):
-    def __init__(self, project_root: str, agent: Optional["SerenaAgent"] = None) -> None:
-        self.project_root = project_root
-        self.agent = agent
-
-        # set encoding based on active project, if available
-        encoding = DEFAULT_SOURCE_FILE_ENCODING
-        if agent is not None:
-            project = agent.get_active_project()
-            if project is not None:
-                encoding = project.project_config.encoding
-        self.encoding = encoding
+    def __init__(self, project: Project) -> None:
+        self.project_root = project.project_root
+        self.encoding = project.project_config.encoding
+        self.newline = project.line_ending.newline_str
 
     class EditedFile(ABC):
         def __init__(self, relative_path: str) -> None:
@@ -69,6 +57,16 @@ class CodeEditor(Generic[TSymbol], ABC):
         """
         raise NotImplementedError("This method must be overridden for each subclass")
 
+    def read_file(self, relative_path: str) -> str:
+        """
+        Reads the content of a file.
+
+        :param relative_path: the relative path of the file to read
+        :return: the content of the file
+        """
+        with self._open_file_context(relative_path) as file:
+            return file.get_contents()
+
     @contextmanager
     def edited_file_context(self, relative_path: str) -> Iterator["CodeEditor.EditedFile"]:
         """
@@ -81,8 +79,9 @@ class CodeEditor(Generic[TSymbol], ABC):
 
     def _save_edited_file(self, edited_file: "CodeEditor.EditedFile") -> None:
         abs_path = os.path.join(self.project_root, edited_file.relative_path)
-        with open(abs_path, "w", encoding=self.encoding) as f:
-            f.write(edited_file.get_contents())
+        new_contents = edited_file.get_contents()
+        with open(abs_path, "w", encoding=self.encoding, newline=self.newline) as f:
+            f.write(new_contents)
 
     @abstractmethod
     def _find_unique_symbol(self, name_path: str, relative_file_path: str) -> TSymbol:
@@ -231,20 +230,13 @@ class CodeEditor(Generic[TSymbol], ABC):
             edited_file.delete_text_between_positions(start_pos, end_pos)
 
     @abstractmethod
-    def rename_symbol(self, name_path: str, relative_file_path: str, new_name: str) -> str:
-        """
-        Renames the symbol with the given name throughout the codebase.
-
-        :param name_path: the name path of the symbol to rename
-        :param relative_file_path: the relative path of the file containing the symbol
-        :param new_name: the new name for the symbol
-        :return: a status message
-        """
+    def rename_symbol(self, name_path: str, relative_path: str, new_name: str) -> str:
+        pass
 
 
 class LanguageServerCodeEditor(CodeEditor[LanguageServerSymbol]):
-    def __init__(self, symbol_retriever: LanguageServerSymbolRetriever, agent: Optional["SerenaAgent"] = None):
-        super().__init__(project_root=symbol_retriever.get_root_path(), agent=agent)
+    def __init__(self, symbol_retriever: LanguageServerSymbolRetriever):
+        super().__init__(project=symbol_retriever.project)
         self._symbol_retriever = symbol_retriever
 
     def _get_language_server(self, relative_path: str) -> SolidLanguageServer:
@@ -348,8 +340,16 @@ class LanguageServerCodeEditor(CodeEditor[LanguageServerSymbol]):
             operation.apply()
         return len(operations)
 
-    def rename_symbol(self, name_path: str, relative_file_path: str, new_name: str) -> str:
-        symbol = self._find_unique_symbol(name_path, relative_file_path)
+    def rename_symbol(self, name_path: str, relative_path: str, new_name: str) -> str:
+        """
+        Renames a symbol, file, or directory throughout the codebase.
+
+        :param name_path: the name path of the symbol to rename
+        :param relative_path: the relative path of the file containing the symbol.
+        :param new_name: the new name
+        :return: a status message
+        """
+        symbol = self._find_unique_symbol(name_path, relative_path)
         if not symbol.location.has_position_in_file():
             raise ValueError(f"Symbol '{name_path}' does not have a valid position in file for renaming")
 
@@ -357,9 +357,9 @@ class LanguageServerCodeEditor(CodeEditor[LanguageServerSymbol]):
         assert symbol.location.line is not None
         assert symbol.location.column is not None
 
-        lang_server = self._get_language_server(relative_file_path)
+        lang_server = self._get_language_server(relative_path)
         rename_result = lang_server.request_rename_symbol_edit(
-            relative_file_path=relative_file_path, line=symbol.location.line, column=symbol.location.column, new_name=new_name
+            relative_file_path=relative_path, line=symbol.location.line, column=symbol.location.column, new_name=new_name
         )
         if rename_result is None:
             raise ValueError(
@@ -378,9 +378,9 @@ class LanguageServerCodeEditor(CodeEditor[LanguageServerSymbol]):
 
 
 class JetBrainsCodeEditor(CodeEditor[JetBrainsSymbol]):
-    def __init__(self, project: Project, agent: Optional["SerenaAgent"] = None) -> None:
+    def __init__(self, project: Project) -> None:
         self._project = project
-        super().__init__(project_root=project.project_root, agent=agent)
+        super().__init__(project)
 
     class EditedFile(CodeEditor.EditedFile):
         def __init__(self, relative_path: str, project: Project):
@@ -426,13 +426,31 @@ class JetBrainsCodeEditor(CodeEditor[JetBrainsSymbol]):
                 )
             return JetBrainsSymbol(symbols[0], self._project)
 
-    def rename_symbol(self, name_path: str, relative_file_path: str, new_name: str) -> str:
+    def rename_symbol(
+        self,
+        name_path: str | None,
+        relative_path: str,
+        new_name: str,
+        rename_in_comments: bool = False,
+        rename_in_text_occurrences: bool = False,
+    ) -> str:
+        """
+        Renames a code symbol, file, or directory throughout the codebase.
+
+        :param name_path: the name path of the symbol to rename. Set to None for renaming a file or directory.
+        :param relative_path: if `name_path` is passed, the relative path of the file containing the symbol.
+            Otherwise, the path to the directory or file to rename.
+        :param new_name: the new name
+        :param rename_in_comments: whether to rename occurrences of the symbol in comments
+        :param rename_in_text_occurrences: whether to rename occurrences of the symbol in text
+        :return: a status message
+        """
         with JetBrainsPluginClient.from_project(self._project) as client:
             client.rename_symbol(
                 name_path=name_path,
-                relative_path=relative_file_path,
+                relative_path=relative_path,
                 new_name=new_name,
-                rename_in_comments=False,
-                rename_in_text_occurrences=False,
+                rename_in_comments=rename_in_comments,
+                rename_in_text_occurrences=rename_in_text_occurrences,
             )
             return "Success"

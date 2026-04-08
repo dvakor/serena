@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from serena.text_utils import LineType, search_files, search_text
+from serena.util.text_utils import LineType, search_files, search_text
 
 
 class TestSearchText:
@@ -346,9 +346,9 @@ class TestSearchFiles:
         actual_matched_files = sorted([result.source_file_path for result in results if result.source_file_path])
 
         # Assert that the matched files are exactly the ones expected
-        assert actual_matched_files == sorted(
-            expected_matched_files
-        ), f"Pattern '{paths_include_glob}' failed: expected {sorted(expected_matched_files)}, got {actual_matched_files}"
+        assert actual_matched_files == sorted(expected_matched_files), (
+            f"Pattern '{paths_include_glob}' failed: expected {sorted(expected_matched_files)}, got {actual_matched_files}"
+        )
 
         # Basic check on results structure if files were expected
         if expected_matched_files:
@@ -545,7 +545,7 @@ class TestGlobMatch:
     )
     def test_glob_match(self, pattern, path, expected):
         """Test glob_match function with various patterns."""
-        from src.serena.text_utils import glob_match
+        from serena.util.text_utils import glob_match
 
         assert glob_match(pattern, path) == expected
 
@@ -572,6 +572,6 @@ class TestExpandBraces:
     )
     def test_expand_braces(self, pattern, expected):
         """Test brace expansion for glob patterns."""
-        from serena.text_utils import expand_braces
+        from serena.util.text_utils import expand_braces
 
         assert sorted(expand_braces(pattern)) == sorted(expected)

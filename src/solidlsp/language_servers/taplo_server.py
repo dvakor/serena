@@ -1,28 +1,23 @@
 """
 Provides TOML specific instantiation of the LanguageServer class using Taplo.
 Contains various configurations and settings specific to TOML files.
+
+You can pass the following entries in ``ls_specific_settings["toml"]``:
+    - taplo_version: Override the pinned Taplo version downloaded by Serena
+      (default: the bundled Serena version).
 """
 
-import gzip
-import hashlib
 import logging
 import os
 import platform
 import shutil
-import socket
 import stat
-import threading
-import urllib.request
 from typing import Any
 
-# Download timeout in seconds (prevents indefinite hangs)
-DOWNLOAD_TIMEOUT_SECONDS = 120
-
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
 from solidlsp.ls_config import LanguageServerConfig
-from solidlsp.ls_utils import PathUtils
+from solidlsp.ls_utils import FileUtils, PathUtils
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
-from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
@@ -30,6 +25,7 @@ log = logging.getLogger(__name__)
 # Taplo release version and download URLs
 TAPLO_VERSION = "0.10.0"
 TAPLO_DOWNLOAD_BASE = f"https://github.com/tamasfe/taplo/releases/download/{TAPLO_VERSION}"
+TAPLO_ALLOWED_HOSTS = ("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
 
 # SHA256 checksums for Taplo releases (verified from official GitHub releases)
 # Source: https://github.com/tamasfe/taplo/releases/tag/0.10.0
@@ -45,17 +41,7 @@ TAPLO_SHA256_CHECKSUMS: dict[str, str] = {
 }
 
 
-def _verify_sha256(file_path: str, expected_hash: str) -> bool:
-    """Verify SHA256 checksum of a downloaded file."""
-    sha256_hash = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha256_hash.update(chunk)
-    actual_hash = sha256_hash.hexdigest()
-    return actual_hash.lower() == expected_hash.lower()
-
-
-def _get_taplo_download_url() -> tuple[str, str]:
+def _get_taplo_download_url(version: str = TAPLO_VERSION) -> tuple[str, str]:
     """
     Get the appropriate Taplo download URL for the current platform.
 
@@ -90,7 +76,7 @@ def _get_taplo_download_url() -> tuple[str, str]:
         filename = f"taplo-linux-{arch}.gz"
         executable = "taplo"
 
-    return f"{TAPLO_DOWNLOAD_BASE}/{filename}", executable
+    return f"https://github.com/tamasfe/taplo/releases/download/{version}/{filename}", executable
 
 
 class TaploServer(SolidLanguageServer):
@@ -120,116 +106,87 @@ class TaploServer(SolidLanguageServer):
         Creates a TaploServer instance. This class is not meant to be instantiated directly.
         Use LanguageServer.create() instead.
         """
-        taplo_executable_path = self._setup_runtime_dependencies(solidlsp_settings)
         super().__init__(
             config,
             repository_root_path,
-            ProcessLaunchInfo(cmd=f"{taplo_executable_path} lsp stdio", cwd=repository_root_path),
+            None,
             "toml",
             solidlsp_settings,
         )
-        self.server_ready = threading.Event()
 
-    @classmethod
-    def _setup_runtime_dependencies(cls, solidlsp_settings: SolidLSPSettings) -> str:
-        """
-        Setup runtime dependencies for Taplo and return the command to start the server.
-        """
-        # First check if taplo is already installed system-wide
-        system_taplo = shutil.which("taplo")
-        if system_taplo:
-            log.info(f"Using system-installed Taplo at: {system_taplo}")
-            return system_taplo
+    def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
+        return self.DependencyProvider(self._custom_settings, self._ls_resources_dir)
 
-        # Setup local installation directory
-        taplo_dir = os.path.join(cls.ls_resources_dir(solidlsp_settings), "taplo")
-        os.makedirs(taplo_dir, exist_ok=True)
+    class DependencyProvider(LanguageServerDependencyProviderSinglePath):
+        def _get_or_install_core_dependency(self) -> str:
+            """
+            Setup runtime dependencies for Taplo and return the command to start the server.
+            """
+            # First check if taplo is already installed system-wide
+            system_taplo = shutil.which("taplo")
+            if system_taplo:
+                log.info(f"Using system-installed Taplo at: {system_taplo}")
+                return system_taplo
 
-        _, executable_name = _get_taplo_download_url()
-        taplo_executable = os.path.join(taplo_dir, executable_name)
+            # Setup local installation directory
+            taplo_dir = os.path.join(self._ls_resources_dir, "taplo")
+            os.makedirs(taplo_dir, exist_ok=True)
 
-        if os.path.exists(taplo_executable) and os.access(taplo_executable, os.X_OK):
-            log.info(f"Using cached Taplo at: {taplo_executable}")
-            return taplo_executable
+            taplo_version = self._custom_settings.get("taplo_version", TAPLO_VERSION)
+            _, executable_name = _get_taplo_download_url(taplo_version)
+            taplo_executable = os.path.join(taplo_dir, executable_name)
 
-        # Download and install Taplo
-        log.info(f"Taplo not found. Downloading version {TAPLO_VERSION}...")
-        cls._download_taplo(taplo_dir, taplo_executable)
+            if os.path.exists(taplo_executable) and os.access(taplo_executable, os.X_OK):
+                log.info(f"Using cached Taplo at: {taplo_executable}")
+                return taplo_executable
 
-        if not os.path.exists(taplo_executable):
-            raise FileNotFoundError(
-                f"Taplo executable not found at {taplo_executable}. "
-                "Installation may have failed. Try installing manually: cargo install taplo-cli --locked"
-            )
+            # Download and install Taplo
+            log.info(f"Taplo not found. Downloading version {taplo_version}...")
+            self._download_taplo(taplo_dir, taplo_executable, taplo_version)
 
-        return taplo_executable
-
-    @classmethod
-    def _download_taplo(cls, install_dir: str, executable_path: str) -> None:
-        """Download and extract Taplo binary with SHA256 verification."""
-        # TODO: consider using existing download utilities in SolidLSP instead of the custom logic here
-        download_url, _ = _get_taplo_download_url()
-        archive_filename = os.path.basename(download_url)
-
-        try:
-            log.info(f"Downloading Taplo from: {download_url}")
-            archive_path = os.path.join(install_dir, archive_filename)
-
-            # Download the archive with timeout to prevent indefinite hangs
-            old_timeout = socket.getdefaulttimeout()
-            try:
-                socket.setdefaulttimeout(DOWNLOAD_TIMEOUT_SECONDS)
-                urllib.request.urlretrieve(download_url, archive_path)
-            finally:
-                socket.setdefaulttimeout(old_timeout)
-
-            # Verify SHA256 checksum
-            expected_hash = TAPLO_SHA256_CHECKSUMS.get(archive_filename)
-            if expected_hash:
-                if not _verify_sha256(archive_path, expected_hash):
-                    os.remove(archive_path)
-                    raise RuntimeError(
-                        f"SHA256 checksum verification failed for {archive_filename}. "
-                        "The downloaded file may be corrupted or tampered with. "
-                        "Try installing manually: cargo install taplo-cli --locked"
-                    )
-                log.info(f"SHA256 checksum verified for {archive_filename}")
-            else:
-                log.warning(
-                    f"No SHA256 checksum available for {archive_filename}. "
-                    "Skipping verification - consider installing manually: cargo install taplo-cli --locked"
+            if not os.path.exists(taplo_executable):
+                raise FileNotFoundError(
+                    f"Taplo executable not found at {taplo_executable}. "
+                    "Installation may have failed. Try installing manually: cargo install taplo-cli --locked"
                 )
 
-            # Extract based on format
-            if archive_path.endswith(".gz") and not archive_path.endswith(".tar.gz"):
-                # Single file gzip
-                with gzip.open(archive_path, "rb") as f_in:
-                    with open(executable_path, "wb") as f_out:
-                        f_out.write(f_in.read())
-            elif archive_path.endswith(".zip"):
-                import zipfile
+            return taplo_executable
 
-                with zipfile.ZipFile(archive_path, "r") as zip_ref:
-                    # Security: Validate paths to prevent zip slip vulnerability
-                    for member in zip_ref.namelist():
-                        member_path = os.path.normpath(os.path.join(install_dir, member))
-                        if not member_path.startswith(os.path.normpath(install_dir)):
-                            raise RuntimeError(f"Zip slip detected: {member} attempts to escape install directory")
-                    zip_ref.extractall(install_dir)
+        def _create_launch_command(self, core_path: str) -> list[str]:
+            return [core_path, "lsp", "stdio"]
 
-            # Make executable on Unix systems
-            if os.name != "nt":
-                os.chmod(executable_path, os.stat(executable_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        @classmethod
+        def _download_taplo(cls, install_dir: str, executable_path: str, version: str = TAPLO_VERSION) -> None:
+            """Download and extract Taplo binary using the shared verified download helper."""
+            download_url, _ = _get_taplo_download_url(version)
+            archive_filename = os.path.basename(download_url)
+            expected_hash = TAPLO_SHA256_CHECKSUMS.get(archive_filename) if version == TAPLO_VERSION else None
+            if expected_hash is None and version == TAPLO_VERSION:
+                raise RuntimeError(f"No SHA256 checksum configured for Taplo archive: {archive_filename}")
 
-            # Clean up archive
-            os.remove(archive_path)
-            log.info(f"Taplo installed successfully at: {executable_path}")
+            try:
+                log.info(f"Downloading Taplo from: {download_url}")
+                archive_type = "zip" if archive_filename.endswith(".zip") else "gz"
+                target_path = install_dir if archive_type == "zip" else executable_path
+                FileUtils.download_and_extract_archive_verified(
+                    download_url,
+                    target_path,
+                    archive_type,
+                    expected_sha256=expected_hash,
+                    allowed_hosts=TAPLO_ALLOWED_HOSTS,
+                )
 
-        except Exception as e:
-            log.error(f"Failed to download Taplo: {e}")
-            raise RuntimeError(
-                f"Failed to download Taplo from {download_url}. Try installing manually: cargo install taplo-cli --locked"
-            ) from e
+                # Make executable on Unix systems
+                if os.name != "nt":
+                    os.chmod(executable_path, os.stat(executable_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+                log.info(f"Taplo installed successfully at: {executable_path}")
+
+            except Exception as e:
+                log.error(f"Failed to download Taplo: {e}")
+                raise RuntimeError(
+                    f"Failed to download Taplo from {download_url}. Try installing manually: cargo install taplo-cli --locked"
+                ) from e
 
     @staticmethod
     def _get_initialize_params(repository_absolute_path: str) -> InitializeParams:
@@ -308,8 +265,6 @@ class TaploServer(SolidLanguageServer):
         self.server.notify.initialized({})
 
         log.info("Taplo server initialization complete")
-        self.server_ready.set()
-        self.completions_available.set()
 
     def is_ignored_dirname(self, dirname: str) -> bool:
         """Define TOML-specific directories to ignore."""

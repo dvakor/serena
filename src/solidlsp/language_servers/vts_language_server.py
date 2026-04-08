@@ -14,13 +14,13 @@ from typing import cast
 from overrides import override
 
 from solidlsp.ls import SolidLanguageServer
-from solidlsp.ls_config import LanguageServerConfig
+from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.ls_utils import PlatformId, PlatformUtils
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
-from .common import RuntimeDependency, RuntimeDependencyCollection
+from .common import RuntimeDependency, RuntimeDependencyCollection, build_npm_install_command
 
 log = logging.getLogger(__name__)
 
@@ -72,13 +72,16 @@ class VtsLanguageServer(SolidLanguageServer):
             PlatformId.WIN_arm64,
         ]
         assert platform_id in valid_platforms, f"Platform {platform_id} is not supported for vtsls at the moment"
+        vts_config = solidlsp_settings.get_ls_specific_settings(Language.TYPESCRIPT_VTS)
+        vtsls_version = vts_config.get("vtsls_version", "0.2.9")
+        npm_registry = vts_config.get("npm_registry")
 
         deps = RuntimeDependencyCollection(
             [
                 RuntimeDependency(
                     id="vtsls",
                     description="vtsls language server package",
-                    command="npm install --prefix ./ @vtsls/language-server@0.2.9",
+                    command=build_npm_install_command("@vtsls/language-server", vtsls_version, npm_registry),
                     platform_id="any",
                 ),
             ]
@@ -155,6 +158,7 @@ class VtsLanguageServer(SolidLanguageServer):
             await lsp.request_references(...)
             # Shutdown the LanguageServer on exit from scope
         # LanguageServer has been shutdown
+        ```
         """
 
         def register_capability_handler(params: dict) -> None:
@@ -186,7 +190,6 @@ class VtsLanguageServer(SolidLanguageServer):
             """
             if params.get("quiescent") is True:
                 self.server_ready.set()
-                self.completions_available.set()
 
         self.server.on_request("client/registerCapability", register_capability_handler)
         self.server.on_notification("window/logMessage", window_log_message)
@@ -228,7 +231,6 @@ class VtsLanguageServer(SolidLanguageServer):
             log.info("Timeout waiting for VTS server to become ready, proceeding anyway")
             # Fallback: assume server is ready after timeout
             self.server_ready.set()
-        self.completions_available.set()
 
     @override
     def _get_wait_time_for_cross_file_referencing(self) -> float:

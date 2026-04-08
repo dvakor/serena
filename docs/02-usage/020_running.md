@@ -21,7 +21,7 @@ In general, to get help, append `--help` to the command, i.e.
 
 `uvx` is part of `uv`. It can be used to run the latest version of Serena directly from the repository, without an explicit local installation.
 
-    uvx --from git+https://github.com/oraios/serena serena 
+    uvx -p 3.13 --from git+https://github.com/oraios/serena serena 
 
 Explore the CLI to see some of the customization options that serena provides (more info on them below).
 
@@ -124,7 +124,7 @@ case, you can simply run the `start-mcp-server` command without any additional o
 
 For example, to run the server in stdio mode via `uvx`, you would run:
 
-    uvx --from git+https://github.com/oraios/serena serena start-mcp-server 
+    uvx -p 3.13 --from git+https://github.com/oraios/serena serena start-mcp-server 
  
 See the section ["Configuring Your MCP Client"](030_clients) for specific information on how to configure your MCP client (e.g. Claude Code, Codex, Cursor, etc.)
 to use such a launch command.
@@ -132,7 +132,7 @@ to use such a launch command.
 (streamable-http)=
 ### Streamable HTTP Mode
 
-When using instead the *Streamable HTTP* mode, you control the server lifecycle yourself,
+When using *Streamable HTTP* mode, you control the server lifecycle yourself,
 i.e. you start the server and provide the client with the URL to connect to it.
 
 Simply provide `start-mcp-server` with the `--transport streamable-http` option and optionally provide the desired port
@@ -143,11 +143,21 @@ via the `--port` option.
 For example, to run the Serena MCP server in streamable HTTP mode on port 9121 using uvx,
 you would run
 
-    uvx --from git+https://github.com/oraios/serena serena start-mcp-server --transport streamable-http --port 9121
+    uvx -p 3.13 --from git+https://github.com/oraios/serena serena start-mcp-server --transport streamable-http --port 9121
 
 and then configure your client to connect to `http://localhost:9121/mcp`.
 
-Note that while the legacy SSE transport is also supported (via `--transport sse` with corresponding /sse endpoint), its use is discouraged.
+By default, only connections from localhost are allowed; pass the `--host <listen_address>` option to configure
+the listen address and allow remote connections if needed (but be aware of the security implications of doing so).
+
+**When to use.** Note that Serena is a stateful MCP server, and only one coding project can be active at a time.
+Therefore, starting a single Serena instance and connecting it to multiple clients is only 
+appropriate if all clients will be working on the same project.  
+If you want several agents to work on different projects, making each client/agent start its own server
+in stdio mode is likely the best option.
+See section [The Project Workflow](040_workflow) for more information on how to manage projects in Serena.
+
+The legacy SSE transport is also supported (via `--transport sse` with corresponding /sse endpoint), its use is discouraged.
 
 (mcp-args)=
 ### MCP Server Command-Line Arguments
@@ -162,8 +172,8 @@ to get a list of all available options.
 Some useful options include:
 
   * `--project <path|name>`: specify the project to work on by name or path.
-  * `--project-from-cwd`: auto-detect the project from current working directory   
-    (looking for a directory containing `.serena/project.yml` or `.git` in parent directories, activating the current directory if none is found);  
+  * `--project-from-cwd`: auto-detect the project from current working directory     
+    (looking for a directory containing `.serena/project.yml` or `.git` in parent directories and activating the containing directory as the project root, if any).
     This option is intended for CLI-based agents like Claude Code, Gemini and Codex, which are typically started from within the project directory
     and which do not change directories during their operation.
   * `--language-backend JetBrains`: use the Serena JetBrains Plugin as the language backend (overriding the default backend configured in the central configuration)

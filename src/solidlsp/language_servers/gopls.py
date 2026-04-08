@@ -1,13 +1,15 @@
+import hashlib
+import json
 import logging
 import os
 import pathlib
 import subprocess
-import threading
+from collections.abc import Hashable
 from typing import Any, cast
 
 from overrides import override
 
-from solidlsp.ls import SolidLanguageServer
+from solidlsp.ls import RawDocumentSymbol, SolidLanguageServer
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
@@ -95,7 +97,6 @@ class Gopls(SolidLanguageServer):
         self._setup_runtime_dependency()
 
         super().__init__(config, repository_root_path, ProcessLaunchInfo(cmd="gopls", cwd=repository_root_path), "go", solidlsp_settings)
-        self.server_ready = threading.Event()
         self.request_id = 0
 
     def _get_initialize_params(self, repository_absolute_path: str) -> InitializeParams:
@@ -167,15 +168,13 @@ class Gopls(SolidLanguageServer):
     _CACHE_CONTEXT_ENV_KEYS = ("GOFLAGS", "GOOS", "GOARCH", "CGO_ENABLED")
 
     @override
-    def _cache_context_fingerprint(self) -> str | None:
+    def _document_symbols_cache_fingerprint(self) -> Hashable:
         """
         Compute a deterministic fingerprint of the Go build context.
 
         The fingerprint includes gopls_settings and selected env vars that affect symbol discovery.
         """
-        import hashlib
-        import json
-
+        normalize_symbol_name_version = 1
         gopls_settings_raw = self._custom_settings.settings.get("gopls_settings")
 
         gopls_settings: dict | None
@@ -192,17 +191,24 @@ class Gopls(SolidLanguageServer):
             if value:
                 env_subset[key] = value
 
-        # Return None only when BOTH settings and env subset are effectively empty.
+        # Version processed symbols even when the build context itself is empty.
         if gopls_settings is None and not env_subset:
-            return None
+            return normalize_symbol_name_version
 
-        fingerprint_data: dict[str, object] = {"env": env_subset}
+        fingerprint_data: dict[str, object] = {
+            "env": env_subset,
+            "normalize_symbol_name_version": normalize_symbol_name_version,
+        }
         if gopls_settings is not None:
             fingerprint_data["gopls_settings"] = gopls_settings
 
         canonical_json = self._canonical_json_or_raise(json, fingerprint_data)
 
         return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()[:16]
+
+    @override
+    def _normalize_symbol_name(self, symbol: RawDocumentSymbol, relative_file_path: str) -> str:
+        return symbol["name"].rsplit(".", 1)[-1]
 
     def _start_server(self) -> None:
         """Start gopls server process"""
@@ -240,8 +246,6 @@ class Gopls(SolidLanguageServer):
             log.info("Go Language Server (gopls) diagnostics enabled")
 
         self.server.notify.initialized({})
-        self.completions_available.set()
 
         # gopls server is typically ready immediately after initialization
-        self.server_ready.set()
-        self.server_ready.wait()
+        # (no need to wait for events)
